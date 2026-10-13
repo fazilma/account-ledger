@@ -26,16 +26,10 @@ One block per day, one section per account.
 
 | Line | Meaning |
 |---|---|
-| events | Events booked that day. "(value Day N)" marks a backdated entry. |
-| closing ledger | Balance when the day was closed, after that day's fees. |
-| available | Closing balance minus active holds. |
+| closing ledger | Balance when the day was closed, after that day's fees. On Day 6 it includes the interest paid in. |
 | fees assessed | Fees booked at this close. "for Day N" is the negative day being charged. |
-| interest | Interest counted at this close and the running total. Paid in on Day 6. |
 | authorizations | Each hold and its state: APPROVED, DECLINED or SETTLED. |
 | errors | ERROR: event refused, nothing posted. WARNING: applied but flagged. |
-
-The table at the end compares each day's balance as known at its close with
-the balance by value date at the end of the window.
 
 ## Files
 

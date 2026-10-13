@@ -120,7 +120,7 @@ class ReplayTest(unittest.TestCase):
     def test_report_covers_every_day(self):
         report = render(replay())
         for day in range(1, 7):
-            self.assertIn(f"=== Day {day} ", report)
+            self.assertIn(f"=== Day {day} ===", report)
         for label in ("closing ledger", "fees assessed", "authorizations", "errors"):
             self.assertIn(label, report)
 

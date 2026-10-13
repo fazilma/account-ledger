@@ -3,7 +3,7 @@
 Run with:  python3 -m ledger.replay
 """
 
-from .core import ERROR, FEE, SETTLED, Event, Ledger
+from .core import FEE, SETTLED, Event, Ledger
 from .money import fmt
 
 ACCOUNTS = {"ACC-001": "AED", "ACC-002": "BHD"}
@@ -40,49 +40,26 @@ def replay(stream=STREAM, upto=None, **ledger_options):
     return ledger
 
 
-def _describe_event(event):
-    parts = [event.id, event.type]
-    if event.auth_id:
-        parts.append(event.auth_id)
-    if event.reverses:
-        parts.append(f"of {event.reverses}")
-    if event.amount is not None:
-        parts.append(str(event.amount))
-    if event.instalments > 1:
-        parts.append(f"in {event.instalments} instalments")
-    if event.value_date != event.booked_day:
-        parts.append(f"(value Day {event.value_date})")
-    return " ".join(parts)
-
-
 def _describe_auth(record, currency):
     if record.state == SETTLED:
-        return f"{record.auth_id} SETTLED for {fmt(record.settled, currency)} ({record.reason})"
-    return f"{record.auth_id} {record.state} {fmt(record.hold, currency)} ({record.reason})"
+        return f"{record.auth_id} SETTLED for {fmt(record.settled, currency)}"
+    return f"{record.auth_id} {record.state} {fmt(record.hold, currency)}"
 
 
 def _account_lines(ledger, close):
     account, day = close.account, close.day
     currency = ledger.accounts[account]
-    events = [e for e in ledger.events if e.account == account and e.booked_day == day]
     fees = [p for p in ledger.postings if p.account == account and p.kind == FEE and p.booked_day == day]
     auths = ledger.auth_states(account, day).values()
     notices = [n for n in ledger.notices if n.account == account and n.day == day]
 
     closing = fmt(close.closing, currency)
-    interest = f"accrued {fmt(close.accrued, currency)}, running total {fmt(close.accrued_total, currency)}"
     if close.capitalized:
         closing += f"   (includes capitalized interest {fmt(close.capitalized, currency)})"
-        interest += f", capitalized {fmt(close.capitalized, currency)}"
-    elif close.closing_before_fees != close.closing:
-        closing += f"   (before fees {fmt(close.closing_before_fees, currency)})"
 
     rows = [
-        ("events", "; ".join(_describe_event(e) for e in events) or "none"),
         ("closing ledger", closing),
-        ("available", fmt(close.available, currency)),
         ("fees assessed", "; ".join(f"{fmt(-p.amount, currency)} for Day {p.for_day}" for p in fees) or "none"),
-        ("interest", interest),
         ("authorizations", "; ".join(_describe_auth(r, currency) for r in auths) or "none"),
         ("errors", "; ".join(f"{n.severity} {n.event_id} {n.code}: {n.message}" for n in notices) or "none"),
     ]
@@ -90,27 +67,15 @@ def _account_lines(ledger, close):
 
 
 def render(ledger):
+    """Per day and per account: closing ledger balance, fees, authorization states, errors."""
     lines = []
     for day in range(1, ledger.last_day + 1):
-        lines += [f"=== Day {day} " + "=" * 60]
+        lines.append(f"=== Day {day} ===")
         for close in ledger.closes:
             if close.day == day:
                 lines += _account_lines(ledger, close)
         lines.append("")
-
-    lines += ["=== Closing ledger balance: as known at each close vs restated at end of window ==="]
-    for account, currency in ledger.accounts.items():
-        lines.append(f"{account} ({currency})")
-        for close in (c for c in ledger.closes if c.account == account):
-            restated = ledger.balance(account, close.day)
-            mark = "" if restated == close.closing else "   <- restated by later backdated entries"
-            lines.append(
-                f"  Day {close.day}   at close {fmt(close.closing, currency):>14}"
-                f"   restated {fmt(restated, currency):>14}{mark}"
-            )
-    errors = sum(1 for n in ledger.notices if n.severity == ERROR)
-    lines += ["", f"Events applied: {len(ledger.events)}. Refused: {errors}. Warnings: {len(ledger.notices) - errors}."]
-    return "\n".join(lines)
+    return "\n".join(lines).rstrip()
 
 
 def main():

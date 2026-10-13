@@ -60,7 +60,7 @@ numbers refer to BRIEF.md.
 
 | # | Unclear | Assumed |
 |---|---|---|
-| A34 | Which closing balance is printed? | The one known when the day closed. A table at the end shows the corrected figures. |
+| A34 | Which closing balance is printed? | The one known when the day closed, not the figure corrected by later backdated entries. |
 | A35 | Does the Day 6 balance include interest? | Yes. |
 | A36 | What is an "error"? | Refusals and warnings both appear, each labelled. |
 
