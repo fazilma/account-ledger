@@ -9,3 +9,4 @@ Entries for 11 and 12 October carry a date only: the exact times were not record
 - 2026-10-13 11:36 — Checked environment: Python 3.14.6, git 2.50.1, empty folder, not yet a repository.
 - 2026-10-13 11:40 — Repository initialised, scaffold committed. Local hooks require a stated justification before each new file; complied each time.
 - 2026-10-13 11:40 — money.py: per-currency precision, half-even rounding, refusal of over-precise inputs, exact split in minor units. 11 tests pass.
+- 2026-10-13 11:41 — core.py: frozen Event/Posting/Notice records, append-only logs, balance by value date, credits, debits, instalments, reversal as compensating postings, refusals recorded as notices. 23 tests pass.
