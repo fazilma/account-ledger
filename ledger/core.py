@@ -8,13 +8,20 @@ derived by folding the logs, never stored and updated in place.
 from dataclasses import dataclass
 from decimal import Decimal
 
-from .money import MoneyError, parse_amount, split_evenly
+from .money import MoneyError, fmt, parse_amount, split_evenly
 
 ZERO = Decimal(0)
 
 CREDIT = "CREDIT"
 DEBIT = "DEBIT"
 REVERSAL = "REVERSAL"
+AUTHORIZATION = "AUTHORIZATION"
+SETTLEMENT = "SETTLEMENT"
+FORCE_POST = "FORCE_POST"
+
+APPROVED = "APPROVED"
+DECLINED = "DECLINED"
+SETTLED = "SETTLED"
 
 ERROR = "ERROR"
 WARNING = "WARNING"
@@ -53,6 +60,21 @@ class Posting:
 
 
 @dataclass(frozen=True)
+class AuthRecord:
+    """One step in an authorization's life. The latest record is its state."""
+
+    seq: int
+    account: str
+    auth_id: str
+    state: str
+    hold: Decimal
+    settled: Decimal
+    day: int
+    event_id: str
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class Notice:
     """An error (event refused) or warning (event applied, but flagged)."""
 
@@ -81,6 +103,7 @@ class Ledger:
         self._last_day = last_day
         self._events = []
         self._postings = []
+        self._auths = []
         self._notices = []
 
     # ---- read side -------------------------------------------------------
@@ -112,6 +135,29 @@ class Ledger:
             ZERO,
         )
 
+    @property
+    def auth_records(self):
+        return tuple(self._auths)
+
+    def auth_states(self, account, day=None):
+        """Latest record per authorization, as known at the end of `day`."""
+        day = self._last_day if day is None else day
+        latest = {}
+        for r in self._auths:
+            if r.account == account and r.day <= day:
+                latest[r.auth_id] = r
+        return latest
+
+    def holds(self, account):
+        """Total of active holds: authorizations approved and not yet settled."""
+        return sum(
+            (r.hold for r in self.auth_states(account).values() if r.state == APPROVED), ZERO
+        )
+
+    def available(self, account, day=None):
+        """Available balance: ledger balance minus active holds (R5)."""
+        return self.balance(account, day) - self.holds(account)
+
     # ---- write side ------------------------------------------------------
 
     def apply(self, event):
@@ -132,7 +178,13 @@ class Ledger:
         return True
 
     def _handlers(self):
-        return {CREDIT: self._post_entry, DEBIT: self._post_entry, REVERSAL: self._reverse}
+        return {
+            CREDIT: self._post_entry,
+            DEBIT: self._post_entry,
+            REVERSAL: self._reverse,
+            AUTHORIZATION: self._authorize,
+            SETTLEMENT: self._settle,
+        }
 
     def _validate(self, event):
         if any(e.id == event.id for e in self._events):
@@ -194,7 +246,76 @@ class Ledger:
         for p in originals:
             self._post(event, REVERSAL, -p.amount, reverses=event.reverses, note=f"reverses {event.reverses}")
 
+    def _authorize(self, event):
+        """Approve only if available balance stays >= 0 after the hold (R5).
+
+        A decline is a decision, not an error: it is recorded as an
+        authorization state and the event is accepted into the log.
+        """
+        if not event.auth_id:
+            raise Rejected("MISSING_AUTH_ID", "authorization has no auth_id")
+        if event.auth_id in self.auth_states(event.account):
+            raise Rejected("DUPLICATE_AUTHORIZATION", f"{event.auth_id} already exists")
+        amount = self._amount(event)
+        after = self.available(event.account, event.booked_day) - amount
+        currency = self._accounts[event.account]
+        if after >= 0:
+            self._auth(event, APPROVED, hold=amount, reason=f"available after hold {fmt(after, currency)}")
+        else:
+            self._auth(event, DECLINED, hold=amount, reason=f"available after hold would be {fmt(after, currency)}")
+
+    def _settle(self, event):
+        """Post a settlement.
+
+        A settlement reports money that has already moved at the scheme. The
+        ledger records it even when no matching hold exists (a force-post),
+        and flags it, because refusing would leave the ledger wrong about the
+        account. Only a second settlement of the same authorization is refused.
+        """
+        if not event.auth_id:
+            raise Rejected("MISSING_AUTH_ID", "settlement has no auth_id")
+        amount = self._amount(event)
+        currency = self._accounts[event.account]
+        auth = self.auth_states(event.account).get(event.auth_id)
+        if auth is None:
+            self._post(event, FORCE_POST, -amount, note=f"{event.auth_id} unmatched")
+            self._notice(
+                event, WARNING, "UNMATCHED_SETTLEMENT",
+                f"{event.auth_id} has no authorization; {fmt(amount, currency)} force-posted for dispute",
+            )
+        elif auth.state == SETTLED:
+            raise Rejected("DUPLICATE_SETTLEMENT", f"{event.auth_id} was already settled by {auth.event_id}")
+        elif auth.state == DECLINED:
+            self._post(event, FORCE_POST, -amount, note=f"{event.auth_id} was declined")
+            self._notice(
+                event, WARNING, "SETTLEMENT_OF_DECLINED_AUTH",
+                f"{event.auth_id} was declined; {fmt(amount, currency)} force-posted for dispute",
+            )
+        else:
+            self._post(event, SETTLEMENT, -amount, note=f"settles {event.auth_id}")
+            self._auth(event, SETTLED, hold=auth.hold, settled=amount, reason=f"hold {fmt(auth.hold, currency)} released")
+            if amount > auth.hold:
+                self._notice(
+                    event, WARNING, "OVER_SETTLEMENT",
+                    f"{event.auth_id} settled for {fmt(amount, currency)}, above its hold of {fmt(auth.hold, currency)}",
+                )
+
     # ---- append helpers --------------------------------------------------
+
+    def _auth(self, event, state, *, hold, settled=ZERO, reason=""):
+        self._auths.append(
+            AuthRecord(
+                seq=len(self._auths) + 1,
+                account=event.account,
+                auth_id=event.auth_id,
+                state=state,
+                hold=hold,
+                settled=settled,
+                day=event.booked_day,
+                event_id=event.id,
+                reason=reason,
+            )
+        )
 
     def _post(self, event, kind, amount, *, value_date=None, for_day=None, reverses=None, note=""):
         posting = Posting(
