@@ -7,8 +7,8 @@ from ledger.core import Event, Ledger
 D = Decimal
 
 
-def new_ledger():
-    return Ledger({"ACC-001": "AED", "ACC-002": "BHD"}, last_day=6)
+def new_ledger(**kw):
+    return Ledger({"ACC-001": "AED", "ACC-002": "BHD"}, last_day=6, **kw)
 
 
 def ev(id, day, type, amount=None, value_date=None, account="ACC-001", **kw):

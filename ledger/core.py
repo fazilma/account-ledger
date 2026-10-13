@@ -8,7 +8,8 @@ derived by folding the logs, never stored and updated in place.
 from dataclasses import dataclass
 from decimal import Decimal
 
-from .money import MoneyError, fmt, parse_amount, split_evenly
+from .config import DAILY_INTEREST_RATE, OVERDRAFT_FEE, WINDOW_DAYS
+from .money import MoneyError, fmt, parse_amount, split_evenly, to_money
 
 ZERO = Decimal(0)
 
@@ -18,6 +19,10 @@ REVERSAL = "REVERSAL"
 AUTHORIZATION = "AUTHORIZATION"
 SETTLEMENT = "SETTLEMENT"
 FORCE_POST = "FORCE_POST"
+FEE = "FEE"
+INTEREST = "INTEREST"
+
+SYSTEM = "SYSTEM"
 
 APPROVED = "APPROVED"
 DECLINED = "DECLINED"
@@ -75,6 +80,40 @@ class AuthRecord:
 
 
 @dataclass(frozen=True)
+class Accrual:
+    """Interest accrued at one day close. Not a balance movement until capitalized.
+
+    amount is the rounded cumulative interest for all days so far, as the
+    ledger sees them at this close, minus everything accrued before. It
+    therefore carries both the rounding remainder and any restatement caused
+    by backdated entries, and the amounts always sum to rounded_cumulative.
+    """
+
+    seq: int
+    account: str
+    day: int
+    amount: Decimal
+    own_day_exact: Decimal
+    exact_cumulative: Decimal
+    rounded_cumulative: Decimal
+
+
+@dataclass(frozen=True)
+class DayClose:
+    """Snapshot taken when a day is closed: the figures as known at that time."""
+
+    seq: int
+    account: str
+    day: int
+    closing_before_fees: Decimal
+    closing: Decimal
+    available: Decimal
+    fee_days: tuple
+    accrued: Decimal
+    capitalized: Decimal
+
+
+@dataclass(frozen=True)
 class Notice:
     """An error (event refused) or warning (event applied, but flagged)."""
 
@@ -97,13 +136,17 @@ class Rejected(Exception):
 
 
 class Ledger:
-    def __init__(self, accounts, last_day):
+    def __init__(self, accounts, last_day=WINDOW_DAYS, overdraft_fee=None, daily_rate=DAILY_INTEREST_RATE):
         """accounts maps account id -> currency. Opening balances are zero."""
         self._accounts = dict(accounts)
         self._last_day = last_day
+        self._overdraft_fee = dict(OVERDRAFT_FEE if overdraft_fee is None else overdraft_fee)
+        self._daily_rate = daily_rate
         self._events = []
         self._postings = []
         self._auths = []
+        self._accruals = []
+        self._closes = []
         self._notices = []
 
     # ---- read side -------------------------------------------------------
@@ -139,6 +182,21 @@ class Ledger:
     def auth_records(self):
         return tuple(self._auths)
 
+    @property
+    def accruals(self):
+        return tuple(self._accruals)
+
+    @property
+    def closes(self):
+        return tuple(self._closes)
+
+    @property
+    def last_day(self):
+        return self._last_day
+
+    def closed_through(self, account):
+        return max((c.day for c in self._closes if c.account == account), default=0)
+
     def auth_states(self, account, day=None):
         """Latest record per authorization, as known at the end of `day`."""
         day = self._last_day if day is None else day
@@ -167,6 +225,9 @@ class Ledger:
         """
         try:
             self._validate(event)
+            # Days before the event's booking day are over for this account.
+            late = event.booked_day <= self.closed_through(event.account)
+            self._close_through(event.account, event.booked_day - 1)
             handler = self._handlers().get(event.type)
             if handler is None:
                 raise Rejected("UNKNOWN_EVENT_TYPE", f"unknown event type {event.type!r}")
@@ -175,7 +236,93 @@ class Ledger:
             self._notice(event, ERROR, r.code, r.message)
             return False
         self._events.append(event)
+        if late:
+            self._notice(
+                event, WARNING, "LATE_BOOKING",
+                f"booked on Day {event.booked_day}, which was already closed; picked up at the next close",
+            )
         return True
+
+    def finish(self):
+        """Close every remaining day for every account, through the last day."""
+        for account in self._accounts:
+            self._close_through(account, self._last_day)
+
+    def _close_through(self, account, day):
+        for d in range(self.closed_through(account) + 1, day + 1):
+            self.close_day(account, d)
+
+    def close_day(self, account, day):
+        """End-of-day run for one account: fee sweep, interest, capitalization."""
+        if day != self.closed_through(account) + 1 or day > self._last_day:
+            raise ValueError(f"cannot close Day {day} for {account}: days close once, in order")
+        currency = self._accounts[account]
+        closing_before_fees = self.balance(account, day)
+        fee_days = self._assess_overdraft_fees(account, day)
+        accrual = self._accrue_interest(account, day)
+        capitalized = ZERO
+        if day == self._last_day and accrual.rounded_cumulative > 0:
+            capitalized = accrual.rounded_cumulative
+            self._system_post(account, INTEREST, capitalized, day, note="interest capitalization")
+        self._closes.append(
+            DayClose(
+                seq=len(self._closes) + 1,
+                account=account,
+                day=day,
+                closing_before_fees=closing_before_fees,
+                closing=self.balance(account, day),
+                available=self.available(account, day),
+                fee_days=tuple(fee_days),
+                accrued=accrual.amount,
+                capitalized=to_money(capitalized, currency),
+            )
+        )
+
+    def _assess_overdraft_fees(self, account, day):
+        """Charge each day whose closing balance is negative, once (R1).
+
+        Every day up to today is re-checked, so a backdated entry that turns
+        an earlier day negative is charged when it becomes known. The fee is
+        booked today with today's value date, whichever day it is for.
+        """
+        fee = self._overdraft_fee.get(self._accounts[account])
+        charged = {p.for_day for p in self._postings if p.account == account and p.kind == FEE}
+        fee_days = []
+        for d in range(1, day + 1):
+            if d in charged or self.balance(account, d) >= 0:
+                continue
+            if fee is None:
+                message = f"Day {d} closed negative but no overdraft fee is defined for {self._accounts[account]}"
+                if not any(n.account == account and n.message == message for n in self._notices):
+                    self._system_notice(day, account, WARNING, "NO_FEE_CONFIGURED", message)
+                continue
+            self._system_post(account, FEE, -fee, day, for_day=d, note=f"overdraft fee for Day {d}")
+            fee_days.append(d)
+        return fee_days
+
+    def _accrue_interest(self, account, day):
+        """Accrue interest on positive closing balances (R2).
+
+        Rounds the running total, not each day: today's accrual is the rounded
+        cumulative figure minus what was accrued before. Nothing is lost or
+        discarded, so the accruals sum exactly to the capitalized amount.
+        """
+        currency = self._accounts[account]
+        daily = [max(self.balance(account, d), ZERO) * self._daily_rate for d in range(1, day + 1)]
+        exact = sum(daily, ZERO)
+        target = to_money(exact, currency)
+        already = sum((a.amount for a in self._accruals if a.account == account), ZERO)
+        accrual = Accrual(
+            seq=len(self._accruals) + 1,
+            account=account,
+            day=day,
+            amount=target - already,
+            own_day_exact=daily[-1],
+            exact_cumulative=exact,
+            rounded_cumulative=target,
+        )
+        self._accruals.append(accrual)
+        return accrual
 
     def _handlers(self):
         return {
@@ -194,6 +341,8 @@ class Ledger:
         for name, day in (("booked_day", event.booked_day), ("value_date", event.value_date)):
             if not isinstance(day, int) or not 1 <= day <= self._last_day:
                 raise Rejected("DAY_OUT_OF_WINDOW", f"{name} {day!r} is outside Day 1-{self._last_day}")
+        if self.closed_through(event.account) >= self._last_day:
+            raise Rejected("WINDOW_CLOSED", f"{event.account} is closed through Day {self._last_day}")
         if event.currency is not None and event.currency != self._accounts[event.account]:
             raise Rejected(
                 "CURRENCY_MISMATCH",
@@ -332,6 +481,29 @@ class Ledger:
         )
         self._postings.append(posting)
         return posting
+
+    def _system_post(self, account, kind, amount, day, *, for_day=None, note=""):
+        self._postings.append(
+            Posting(
+                seq=len(self._postings) + 1,
+                account=account,
+                kind=kind,
+                amount=amount,
+                booked_day=day,
+                value_date=day,
+                event_id=SYSTEM,
+                for_day=for_day,
+                note=note,
+            )
+        )
+
+    def _system_notice(self, day, account, severity, code, message):
+        self._notices.append(
+            Notice(
+                seq=len(self._notices) + 1, day=day, account=account, event_id=SYSTEM,
+                severity=severity, code=code, message=message,
+            )
+        )
 
     def _notice(self, event, severity, code, message):
         self._notices.append(
