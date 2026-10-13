@@ -42,9 +42,9 @@ the brief's stream (Day 5 is already negative) and is pinned by
 **A7. What is the overdraft fee for BHD?**
 R1 gives AED 25.00 only. ACC-002 never goes negative, so the stream does not
 need an answer.
-*Chosen:* no fee is configured for BHD. A negative BHD day charges nothing
-and raises the warning `NO_FEE_CONFIGURED`, so the gap is visible rather
-than silently converted at an invented rate.
+*Chosen:* no fee is configured for BHD, and a negative BHD day is charged
+nothing. Converting AED 25.00 at an invented rate would be worse than not
+charging. *Not handled:* the ledger does not warn when this happens.
 
 **A8. Can a plain debit overdraw the account?**
 R5 limits authorizations only.
@@ -102,16 +102,20 @@ day, minus active holds, minus the new hold. Approved at exactly zero.
 *Other reading:* 15.00 stays held until an expiry the brief does not define.
 
 **A19. A settlement above its hold.**
-Not in the stream. *Chosen:* post it and warn (`OVER_SETTLEMENT`).
+Not in the stream. *Chosen:* post the settled amount and release the hold,
+the same as any settlement. *Not handled:* no warning is raised.
 
 **A20. A settlement with no authorization (E6).**
 *Chosen:* force-post and warn. See REJECTED.md (C4).
 
 **A21. A settlement against a declined authorization.**
-Not in the stream. *Chosen:* same as A20, with `SETTLEMENT_OF_DECLINED_AUTH`.
+Not in the stream. *Chosen:* same as A20. The rule is one line: a settlement
+with no active hold is force-posted and flagged `UNMATCHED_SETTLEMENT`.
 
 **A22. A second settlement of the same authorization.**
-Not in the stream. *Chosen:* refused (`DUPLICATE_SETTLEMENT`).
+Not in the stream. *Chosen:* same rule as A21: the hold is gone, so it is
+force-posted and flagged. *Not handled:* the ledger does not tell a true
+duplicate apart from a second genuine presentment; both go to dispute.
 
 **A23. Is a declined authorization an error?**
 The brief asks for "authorization states" and "errors" separately.
@@ -134,14 +138,21 @@ another.
 
 **A27. E9 (Day 6) is listed before E10 (Day 5).**
 "Replayed in this order" conflicts with day order.
-*Chosen:* replay in the listed order. Days are closed per account, so
-ACC-002's Day 5 is still open when E10 arrives and the result is identical
-to day order (`test_listing_e10_after_e9_changes_nothing`).
+*Chosen:* the replay works day by day: apply that day's events in their
+listed order, then close the day. So E10 is applied on Day 5 and E9 on Day
+6. The listed order is kept wherever it can matter: within a day, and for
+any two events on the same account. E9 and E10 are on different accounts,
+and `test_listing_e10_after_e9_changes_nothing` confirms the result is the
+same either way.
+*Other reading:* apply strictly in listed order and close days as the
+stream advances. Day 5 would then close for ACC-002 before E10 arrived.
 
 **A28. An event booked on a day already closed for its account.**
-Not in the stream. *Chosen:* apply it, warn (`LATE_BOOKING`), and let the
-next close restate fees and interest. After the Day 6 close nothing is
-accepted (`WINDOW_CLOSED`).
+Not in the stream, and the day-by-day replay cannot produce it.
+*Not handled:* the ledger does not check. If a caller did apply such an
+event, the next close would pick it up, because every close re-checks all
+earlier days for fees and restates interest; but nothing would flag it, and
+after the Day 6 close nothing would pick it up at all.
 
 **A29. What does the reversal's value date mean?**
 E9 is booked Day 6 with value date Day 2.
@@ -180,3 +191,14 @@ after fees. A table at the end shows the restated figures beside them.
 **A36. What counts as an "error"?**
 *Chosen:* the errors line carries both refusals (ERROR) and applied-but-
 flagged events (WARNING), each labelled.
+
+## Deliberately not handled
+
+After a first version that handled many cases the stream never contains, the
+ledger was cut back to what the brief exercises (see WORKLOG.md). These are
+known and left out on purpose:
+
+- duplicate event IDs, and booking or value dates outside Day 1-6
+- a second authorization reusing an existing authorization ID
+- warnings for A7, A19 and A28 above
+- a reversal that states an amount different from the original

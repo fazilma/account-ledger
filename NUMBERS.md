@@ -13,7 +13,7 @@ was chosen here, and why it is that value and not half of it.
 | BHD precision | 3 decimal places | `money.PRECISION` | R3, and the Bahraini dinar's minor unit (fils) is 1/1000. Anything less cannot represent E10's instalments of 3.333. |
 | Window length | 6 days | `config.WINDOW_DAYS` | The brief's window is Day 1 to Day 6 and interest capitalizes at the end of Day 6. At 3, E5 to E10 would be refused as outside the window. |
 | Approval threshold | available >= 0 | `Ledger._authorize` | R5: "remains at or above zero". Zero is approved; one minor unit below is declined. Both sides are tested. |
-| Overdraft threshold | closing < 0 | `Ledger._assess_overdraft_fees` | R1: "is negative". Zero is not negative, so a zero close is free. |
+| Overdraft threshold | closing < 0 | `Ledger._charge_overdraft_fees` | R1: "is negative". Zero is not negative, so a zero close is free. |
 | Interest floor | balance > 0 only | `Ledger._accrue_interest` (`max(balance, 0)`) | R2: "positive balances only". No debit interest is charged on overdrawn days; the overdraft fee is the only cost. |
 | Instalment count for E10 | 3 | `replay.STREAM` | Stated in E10. |
 | All event amounts and days | as listed | `replay.STREAM` | Copied from the brief's event stream, entered as strings so no float is ever involved. |
@@ -26,8 +26,8 @@ was chosen here, and why it is that value and not half of it.
 | What gets rounded | the running interest total | `Ledger._accrue_interest` | Rounding each day separately loses up to half a minor unit per day (0.024 over six days on a 285.00 balance; see `test_remainder_is_carried_not_discarded`). Rounding the total once loses nothing and satisfies R2. |
 | Instalment remainder | 1 minor unit each to the first instalments | `money.split_evenly` | 10.000 / 3 leaves 0.001 over. It has to go somewhere and one whole minor unit is the smallest amount that exists; half a unit (0.0005) is not representable in BHD. "First" rather than "last" is a convention: the earliest instalment is the one already due. |
 | Decimal working precision | 28 significant digits | Python's default `decimal` context, left unchanged | The only inexact-looking step is balance x 0.0004, which adds 4 decimal places; cumulative interest therefore needs the balance's digits plus 4. At 28 digits that is exact for balances up to about 10^21. At half (14 digits) an AED balance above 99,999,999.99 would silently lose digits in the interest sum. |
-| Fee value date | the day assessed | `Ledger._system_post` | Follows R1's wording. See AMBIGUITIES.md A3. |
-| Opening balances | 0.00 and 0.000 | `Ledger._zero` | Stated in the brief. Implemented as "no postings", with sums starting from zero at the currency's precision, so no opening entry is invented. |
+| Fee value date | the day assessed | `Ledger._charge_overdraft_fees` | Follows R1's wording. See AMBIGUITIES.md A3. |
+| Opening balances | 0.00 and 0.000 | `Ledger.balance` | Stated in the brief. Implemented as "no postings", with sums starting from zero at the currency's precision, so no opening entry is invented. |
 
 ## Test-only numbers
 

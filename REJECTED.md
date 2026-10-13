@@ -58,12 +58,9 @@ warning `UNMATCHED_SETTLEMENT`, which appears in the Day 4 errors line.
 could deliver: the funds left before the event arrived.
 
 If a reviewer holds that C4 is correct as written, the change is confined to
-`Ledger._settle` in `ledger/core.py`: raise `Rejected` in the `auth is None`
-branch. Days 4 and 5 would then close at 465.00 and -155.00 before fees.
-
-A second settlement against an authorization that is already settled is
-different and *is* refused (`DUPLICATE_SETTLEMENT`): there the ledger has
-positive evidence the presentment is a repeat.
+`Ledger._settle` in `ledger/core.py`: raise `Rejected` in the `else` branch
+instead of posting. Days 4 and 5 would then close at 465.00 and -155.00
+before fees.
 
 ### C6: "After E9, all balances and fees return to their pre-E7 values." Refused.
 
@@ -116,4 +113,7 @@ These were dropped while designing or building. Where it happened is stated.
 | Value-date a retroactive fee on the day it is *for* (Day 2) | Design, before coding | Contradicts R1 and would let a fee change earlier days' balances, cascading into more fees. |
 | Mark the known-gap test with `unittest.expectedFailure` | Design, before coding | The suite would then report success. The brief asks for a failing test, so it fails for real. |
 | Start balance sums from a bare `Decimal(0)` | Build, found by a failing test | An account with no postings reported `0` instead of `0.000`. Sums now start from zero at the currency's precision. |
-| Compare whole `DayClose` records to prove stream order does not matter | Build, found by a failing test | The records carry a global sequence number that depends on account interleaving. The test now compares the figures only. |
+| Compare whole `DayClose` records to prove stream order does not matter | Build, found by a failing test | The records carried a global sequence number that depended on account interleaving. Sequence numbers were later removed altogether. |
+| Per-account lazy closing (applying an event closes that account's earlier days) | Build, after review | It honoured the listed order literally but hid the day loop inside `apply`. Replaced by an explicit loop in the replay: apply the day's events, close the day. |
+| Handling for cases the stream never contains: over-settlement, declined-authorization and duplicate settlements as separate paths, late bookings, closed-window checks, duplicate IDs, a no-fee warning | Build, after review | The first version had 22 error and warning paths, of which the brief's stream reaches one. It made a simple ledger hard to read. `core.py` went from 524 to 327 lines; the cases are now listed as not handled in AMBIGUITIES.md. |
+| Separate `Accrual` record and log | Build, after review | One accrual is made per account per close, so it is now two fields on `DayClose`. |

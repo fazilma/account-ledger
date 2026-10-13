@@ -23,14 +23,20 @@ STREAM = (
 )
 
 
-def replay(stream=STREAM, upto=None):
-    """Apply the stream in order. `upto` stops after that event id, without closing."""
-    ledger = Ledger(ACCOUNTS)
-    for event in stream:
-        ledger.apply(event)
-        if event.id == upto:
-            return ledger
-    ledger.finish()
+def replay(stream=STREAM, upto=None, **ledger_options):
+    """Run the stream: for each day, apply that day's events, then close the day.
+
+    Events keep their listed order within a day. `upto` stops straight after
+    that event id, before its day is closed.
+    """
+    ledger = Ledger(ACCOUNTS, **ledger_options)
+    for day in range(1, ledger.last_day + 1):
+        for event in stream:
+            if event.booked_day == day:
+                ledger.apply(event)
+                if event.id == upto:
+                    return ledger
+        ledger.close_day(day)
     return ledger
 
 
@@ -55,24 +61,21 @@ def _describe_auth(record, currency):
     return f"{record.auth_id} {record.state} {fmt(record.hold, currency)} ({record.reason})"
 
 
-def _account_lines(ledger, account, day):
-    currency = ledger.currency(account)
-    close = next(c for c in ledger.closes if c.account == account and c.day == day)
-    accrual = next(a for a in ledger.accruals if a.account == account and a.day == day)
+def _account_lines(ledger, close):
+    account, day = close.account, close.day
+    currency = ledger.accounts[account]
     events = [e for e in ledger.events if e.account == account and e.booked_day == day]
     fees = [p for p in ledger.postings if p.account == account and p.kind == FEE and p.booked_day == day]
     auths = ledger.auth_states(account, day).values()
     notices = [n for n in ledger.notices if n.account == account and n.day == day]
 
     closing = fmt(close.closing, currency)
-    if close.closing_before_fees != close.closing:
-        details = [f"before fees {fmt(close.closing_before_fees, currency)}"]
-        if close.capitalized:
-            details = [f"includes capitalized interest {fmt(close.capitalized, currency)}"]
-        closing += f"   ({', '.join(details)})"
-    interest = f"accrued {fmt(accrual.amount, currency)}, running total {fmt(accrual.rounded_cumulative, currency)}"
+    interest = f"accrued {fmt(close.accrued, currency)}, running total {fmt(close.accrued_total, currency)}"
     if close.capitalized:
+        closing += f"   (includes capitalized interest {fmt(close.capitalized, currency)})"
         interest += f", capitalized {fmt(close.capitalized, currency)}"
+    elif close.closing_before_fees != close.closing:
+        closing += f"   (before fees {fmt(close.closing_before_fees, currency)})"
 
     rows = [
         ("events", "; ".join(_describe_event(e) for e in events) or "none"),
@@ -90,8 +93,9 @@ def render(ledger):
     lines = []
     for day in range(1, ledger.last_day + 1):
         lines += [f"=== Day {day} " + "=" * 60]
-        for account in ledger.accounts:
-            lines += _account_lines(ledger, account, day)
+        for close in ledger.closes:
+            if close.day == day:
+                lines += _account_lines(ledger, close)
         lines.append("")
 
     lines += ["=== Closing ledger balance: as known at each close vs restated at end of window ==="]

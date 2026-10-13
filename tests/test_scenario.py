@@ -38,7 +38,7 @@ class AcceptedCriteriaTest(unittest.TestCase):
     def test_c5_an_approved_auth_b_reduces_available_but_not_ledger(self):
         # In the real stream Auth-B is declined (see below), so the criterion
         # is checked on the stream without E7, where it is approved.
-        before = replay(WITHOUT_E7[:-2] + WITHOUT_E7[-1:], upto="E6")
+        before = replay(WITHOUT_E7, upto="E6")
         l = replay(WITHOUT_E7, upto="E8")
         self.assertEqual(l.auth_states(A)["Auth-B"].state, APPROVED)
         self.assertEqual(l.balance(A, 5), before.balance(A, 5))
@@ -88,7 +88,7 @@ class RefusedCriteriaTest(unittest.TestCase):
     def test_c8_no_remainder_is_discarded(self):
         l = replay()
         for account, total in ((A, D("0.74")), (B, D("0.008"))):
-            accrued = sum(a.amount for a in l.accruals if a.account == account)
+            accrued = sum(c.accrued for c in l.closes if c.account == account)
             (cap,) = [p.amount for p in l.postings if p.account == account and p.kind == INTEREST]
             self.assertEqual((accrued, cap), (total, total))
 
@@ -103,19 +103,14 @@ class ReplayTest(unittest.TestCase):
     def test_daily_accruals(self):
         l = replay()
         self.assertEqual(
-            [str(a.amount) for a in l.accruals if a.account == A],
+            [str(c.accrued) for c in l.closes if c.account == A],
             ["0.10", "0.10", "0.26", "0.11", "-0.46", "0.63"],
         )
 
     def test_listing_e10_after_e9_changes_nothing(self):
-        # Close records carry a global sequence number that depends on how the
-        # two accounts interleave, so compare everything except that.
-        figures = lambda l: sorted(
-            (c.account, c.day, c.closing_before_fees, c.closing, c.available, c.fee_days, c.accrued, c.capitalized)
-            for c in l.closes
-        )
-        in_day_order = sorted(STREAM, key=lambda e: e.booked_day)
-        self.assertEqual(figures(replay(in_day_order)), figures(replay()))
+        in_day_order = tuple(sorted(STREAM, key=lambda e: e.booked_day))
+        self.assertNotEqual(in_day_order, STREAM)
+        self.assertEqual(replay(in_day_order).closes, replay().closes)
 
     def test_all_events_applied_with_one_warning(self):
         l = replay()
