@@ -45,6 +45,7 @@ One block per day, one section per account.
 
 | File | Contents |
 |---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Architecture, trade-offs and production considerations |
 | [REJECTED.md](REJECTED.md) | Criteria refused, and approaches dropped |
 | [AMBIGUITIES.md](AMBIGUITIES.md) | What the brief left unclear and what was assumed |
 | [NUMBERS.md](NUMBERS.md) | Every constant and why |
