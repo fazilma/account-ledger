@@ -87,6 +87,16 @@ class SettlementTest(unittest.TestCase):
         self.assertEqual(state(self.l, "Auth-B"), DECLINED)
         self.assertEqual(codes(self.l), ["SETTLEMENT_OF_DECLINED_AUTH"])
 
+    def test_a_settlement_cannot_be_reversed(self):
+        self.l.apply(ev("E5", 4, "SETTLEMENT", "185.00", auth_id="Auth-A"))
+        self.assertFalse(self.l.apply(ev("R", 5, "REVERSAL", reverses="E5")))
+        self.assertEqual(codes(self.l), ["REVERSAL_TARGET_NOT_FOUND"])
+
+    def test_a_hold_on_one_account_does_not_match_a_settlement_on_another(self):
+        self.l.apply(ev("S", 4, "SETTLEMENT", "1.000", auth_id="Auth-A", account="ACC-002"))
+        self.assertEqual(codes(self.l), ["UNMATCHED_SETTLEMENT"])
+        self.assertEqual(state(self.l, "Auth-A"), APPROVED)
+
     def test_auth_state_is_reported_as_known_on_each_day(self):
         self.l.apply(ev("E5", 4, "SETTLEMENT", "185.00", auth_id="Auth-A"))
         self.assertEqual(self.l.auth_states("ACC-001", 1), {})
