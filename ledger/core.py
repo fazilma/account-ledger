@@ -175,8 +175,12 @@ class Ledger:
         day = self._last_day if day is None else day
         return sum(
             (p.amount for p in self._postings if p.account == account and p.value_date <= day),
-            ZERO,
+            self._zero(account),
         )
+
+    def _zero(self, account):
+        """Zero at the account currency's precision, so empty sums keep it (R3)."""
+        return to_money(ZERO, self._accounts[account])
 
     @property
     def auth_records(self):
@@ -209,7 +213,8 @@ class Ledger:
     def holds(self, account):
         """Total of active holds: authorizations approved and not yet settled."""
         return sum(
-            (r.hold for r in self.auth_states(account).values() if r.state == APPROVED), ZERO
+            (r.hold for r in self.auth_states(account).values() if r.state == APPROVED),
+            self._zero(account),
         )
 
     def available(self, account, day=None):

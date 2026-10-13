@@ -23,8 +23,9 @@ def codes(ledger):
 
 
 class BalanceTest(unittest.TestCase):
-    def test_opening_balance_is_zero(self):
-        self.assertEqual(new_ledger().balance("ACC-001"), D("0"))
+    def test_opening_balance_is_zero_at_currency_precision(self):
+        self.assertEqual(str(new_ledger().balance("ACC-001")), "0.00")
+        self.assertEqual(str(new_ledger().balance("ACC-002")), "0.000")
 
     def test_credit_and_debit(self):
         l = new_ledger()
